@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gesture Christmas Tree</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Lato:wght@300;400&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; background-color: #050505; color: #fff; overflow: hidden; }
+        canvas { width: 100vw; height: 100vh; display: block; }
+        .font-cinzel { font-family: 'Cinzel', serif; }
+        .font-lato { font-family: 'Lato', sans-serif; }
+    </style>
+    <!-- MediaPipe Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react/": "https://esm.sh/react@18.2.0/",
+            "react-dom": "https://esm.sh/react-dom@18.2.0",
+            "react-dom/": "https://esm.sh/react-dom@18.2.0/",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "three": "https://esm.sh/three@0.160.0",
+            "three/": "https://esm.sh/three@0.160.0/",
+            "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.12?external=react,react-dom,three",
+            "@react-three/drei": "https://esm.sh/@react-three/drei@9.92.7?external=react,react-dom,three,@react-three/fiber",
+            "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.15.11?external=react,react-dom,three,@react-three/fiber",
+            "zustand": "https://esm.sh/zustand@4.4.7?external=react"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import * as THREE from 'three';
+        import { Canvas, useFrame } from '@react-three/fiber';
+        import { Environment, Stars, Sparkles, Image } from '@react-three/drei';
+        import { EffectComposer, Bloom, Vignette, Noise } from '@react-three/postprocessing';
+        import { create } from 'zustand';
+
+        // ============== CONSTANTS ==============
+        // 圣诞主题图片 (来自 Unsplash 免费图库)
+        const USER_PHOTOS = [
+            "https://images.unsplash.com/photo-1482517967863-00e15c9b44be?w=400&h=520&fit=crop",  // 圣诞树
+            "https://images.unsplash.com/photo-1512389142860-9c449e58a543?w=400&h=520&fit=crop",  // 圣诞装饰球
+            "https://images.unsplash.com/photo-1543934638-bd2e138430c4?w=400&h=520&fit=crop",  // 圣诞礼物
+            "https://images.unsplash.com/photo-1545622783-b3e021430fee?w=400&h=520&fit=crop",  // 圣诞灯饰
+            "https://images.unsplash.com/photo-1576919228236-a097c32a5cd4?w=400&h=520&fit=crop",  // 雪中圣诞
+        ];
+
+        const COLORS = {
+            GOLD_METALLIC: new THREE.Color('#FFD700'),
+            GOLD_CHAMPAGNE: new THREE.Color('#F7E7CE'),
+            GREEN_EMERALD: new THREE.Color('#004225'),
+            GREEN_BRIGHT: new THREE.Color('#0B6623'),
+            GREEN_FOREST: new THREE.Color('#01271C'),
+            RED_RUBY: new THREE.Color('#E0115F'),
+            RED_BURGUNDY: new THREE.Color('#800020'),
+            SILVER: new THREE.Color('#E5E4E2'),
+            SNOW_WHITE: new THREE.Color('#F0F8FF'),
+            GIFT_WRAPS: [
+                new THREE.Color('#FFD700'),
+                new THREE.Color('#C0C0C0'),
+                new THREE.Color('#B8860B'),
+                new THREE.Color('#800020'),
+                new THREE.Color('#E0115F'),
+            ]
+        };
+
+        const CONFIG = {
+            particleCount: 1600,
+            treeHeight: 16,
+            treeRadius: 6.5,
+            spreadRadius: 24,
+        };
+
+        // ============== TYPES ==============
+        const AppMode = {
+            TREE: 'TREE',
+            SCATTER: 'SCATTER',
+            FOCUS: 'FOCUS',
+        };
+
+        // ============== STORE (Zustand) ==============
+        const useStore = create((set, get) => ({
+            mode: AppMode.TREE,
+            handData: {
+                isFist: false,
+                isOpen: false,
+                isPinching: false,
+                position: { x: 0.5, y: 0.5 },
+                rotation: 0,
+            },
+            focusedPhotoIndex: null,
+            setMode: (mode) => set({ mode }),
+            setHandData: (data) => set((state) => ({ handData: { ...state.handData, ...data } })),
+            setFocusedPhoto: (index) => set({ focusedPhotoIndex: index }),
+        }));
+
+        // ============== MATH UTILS ==============
+        const generateParticles = (count) => {
+            const particles = [];
+            
+            for (let i = 0; i < count; i++) {
+                const isStar = i === 0;
+                const scatterPos = [
+                    (Math.random() - 0.5) * CONFIG.spreadRadius * 2,
+                    (Math.random() - 0.5) * CONFIG.spreadRadius * 2,
+                    (Math.random() - 0.5) * CONFIG.spreadRadius * 2,
+                ];
+
+                let x, y, z, color, scale, type;
+
+                if (isStar) {
+                    x = 0;
+                    y = CONFIG.treeHeight / 2 + 1.2;
+                    z = 0;
+                    color = '#FFD700';
+                    scale = 1;
+                    type = 'star';
+                } else {
+                    const yNorm = i / count;
+                    y = (CONFIG.treeHeight * (0.5 - yNorm));
+                    const rScale = Math.pow(yNorm, 0.85);
+                    const radiusBase = rScale * CONFIG.treeRadius;
+                    const rand = Math.random();
+
+                    if (rand > 0.88) {
+                        type = 'gift';
+                        const angle = Math.random() * Math.PI * 2;
+                        let r = radiusBase * (0.9 + Math.random() * 0.4);
+                        x = Math.cos(angle) * r;
+                        z = Math.sin(angle) * r;
+                        color = '#' + COLORS.GIFT_WRAPS[Math.floor(Math.random() * COLORS.GIFT_WRAPS.length)].getHexString();
+                        scale = 0.5 + Math.random() * 0.4;
+                        if (Math.random() > 0.7) {
+                            y = -CONFIG.treeHeight/2 + (Math.random() * 1.5);
+                            const floorR = (Math.random() * 5) + 2;
+                            x = Math.cos(angle) * floorR;
+                            z = Math.sin(angle) * floorR;
+                        }
+                    } else if (rand > 0.80) {
+                        type = 'ring';
+                        const angle = i * 0.7;
+                        const r = radiusBase + 0.5;
+                        x = Math.cos(angle) * r;
+                        z = Math.sin(angle) * r;
+                        color = '#' + COLORS.GOLD_METALLIC.getHexString();
+                        scale = 0.4 + Math.random() * 0.3;
+                    } else if (rand > 0.70) {
+                        type = 'gem';
+                        const angle = i * 1.1;
+                        const r = radiusBase + 0.2;
+                        x = Math.cos(angle) * r;
+                        z = Math.sin(angle) * r;
+                        color = Math.random() > 0.5 ? '#' + COLORS.RED_RUBY.getHexString() : '#' + COLORS.SILVER.getHexString();
+                        scale = 0.4 + Math.random() * 0.2;
+                    } else if (rand > 0.60) {
+                        type = 'snowflake';
+                        const angle = i * 0.5;
+                        const r = radiusBase + 1.0 + Math.random();
+                        x = Math.cos(angle) * r;
+                        z = Math.sin(angle) * r;
+                        color = '#FFFFFF';
+                        scale = 0.2 + Math.random() * 0.2;
+                    } else if (i % 20 === 0) {
+                        type = 'light';
+                        const spiralAngle = yNorm * Math.PI * 18;
+                        const r = radiusBase + 0.4;
+                        x = Math.cos(spiralAngle) * r;
+                        z = Math.sin(spiralAngle) * r;
+                        color = '#F7E7CE';
+                        scale = 0.25;
+                    } else {
+                        type = 'bauble';
+                        const angle = i * 2.39996;
+                        const r = radiusBase * Math.sqrt(Math.random() * 0.9 + 0.1);
+                        x = Math.cos(angle) * r;
+                        z = Math.sin(angle) * r;
+                        const colorRand = Math.random();
+                        if (colorRand > 0.7) color = '#' + COLORS.RED_RUBY.getHexString();
+                        else if (colorRand > 0.5) color = '#' + COLORS.GOLD_METALLIC.getHexString();
+                        else if (colorRand > 0.3) color = '#' + COLORS.SILVER.getHexString();
+                        else if (colorRand > 0.15) color = '#' + COLORS.GREEN_BRIGHT.getHexString();
+                        else color = '#' + COLORS.GREEN_EMERALD.getHexString();
+                        scale = 0.3 + Math.random() * 0.3;
+                    }
+                }
+
+                particles.push({
+                    id: i,
+                    type,
+                    color,
+                    shape: 'sphere',
+                    scale,
+                    initialPos: scatterPos,
+                    treePos: [x, y, z],
+                });
+            }
+            return particles;
+        };
+
+        // ============== GEOMETRIES ==============
+        const baubleGeo = new THREE.SphereGeometry(1, 32, 32);
+        const giftGeo = new THREE.BoxGeometry(1, 1, 1);
+        const snowflakeGeo = new THREE.OctahedronGeometry(1, 0);
+        const lightGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+        const ringGeo = new THREE.TorusGeometry(0.6, 0.15, 16, 32);
+        const gemGeo = new THREE.IcosahedronGeometry(0.8, 0);
+
+        const createStarGeometry = () => {
+            const shape = new THREE.Shape();
+            const outerRadius = 1.0;
+            const innerRadius = 0.45;
+            const spikes = 5;
+            for (let i = 0; i < spikes * 2; i++) {
+                const r = (i % 2 === 0) ? outerRadius : innerRadius;
+                const a = (i / (spikes * 2)) * Math.PI * 2;
+                const x = Math.cos(a + Math.PI/2) * r;
+                const y = Math.sin(a + Math.PI/2) * r;
+                if (i === 0) shape.moveTo(x, y);
+                else shape.lineTo(x, y);
+            }
+            shape.closePath();
+            const extrudeSettings = { depth: 0.3, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 4 };
+            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            geometry.center();
+            return geometry;
+        };
+        const starGeo = createStarGeometry();
+
+        // ============== HAND TRACKER ==============
+        const HandTracker = () => {
+            const videoRef = useRef(null);
+            const { setHandData, setMode } = useStore();
+            const [loaded, setLoaded] = useState(false);
+            const [debugInfo, setDebugInfo] = useState({ avgDist: 0, pinchDist: 0 });
+
+            const pinchFrameCount = useRef(0);
+            const fistFrameCount = useRef(0);
+            const openFrameCount = useRef(0);
+
+            useEffect(() => {
+                if (!videoRef.current) return;
+
+                const onResults = (results) => {
+                    setLoaded(true);
+                    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                        const landmarks = results.multiHandLandmarks[0];
+                        const wrist = landmarks[0];
+                        const tips = [4, 8, 12, 16, 20];
+                        let avgDist = 0;
+                        tips.forEach(idx => {
+                            const dx = landmarks[idx].x - wrist.x;
+                            const dy = landmarks[idx].y - wrist.y;
+                            avgDist += Math.sqrt(dx*dx + dy*dy);
+                        });
+                        avgDist /= 5;
+
+                        const thumbTip = landmarks[4];
+                        const indexTip = landmarks[8];
+                        const pinchDist = Math.sqrt(
+                            Math.pow(thumbTip.x - indexTip.x, 2) + Math.pow(thumbTip.y - indexTip.y, 2)
+                        );
+
+                        setDebugInfo({ avgDist, pinchDist });
+
+                        const centerX = landmarks[9].x;
+                        const centerY = landmarks[9].y;
+
+                        const isFistRaw = avgDist < 0.27;
+                        const isOpenRaw = avgDist > 0.36;
+                        const isPinchingRaw = pinchDist < 0.08;
+
+                        if (isPinchingRaw) pinchFrameCount.current++;
+                        else pinchFrameCount.current = 0;
+                        if (isFistRaw) fistFrameCount.current++;
+                        else fistFrameCount.current = 0;
+                        if (isOpenRaw) openFrameCount.current++;
+                        else openFrameCount.current = 0;
+
+                        const isPinching = pinchFrameCount.current > 3;
+                        const isFist = fistFrameCount.current > 5;
+                        const isOpen = openFrameCount.current > 5;
+
+                        setHandData({
+                            isFist,
+                            isOpen,
+                            isPinching,
+                            position: { x: centerX, y: centerY },
+                            rotation: (centerX - 0.5) * 2,
+                        });
+
+                        const currentMode = useStore.getState().mode;
+
+                        if (isFist && currentMode !== AppMode.TREE) {
+                            setMode(AppMode.TREE);
+                        } else if (isOpen && currentMode === AppMode.TREE) {
+                            setMode(AppMode.SCATTER);
+                        } else if (isPinching && currentMode === AppMode.SCATTER) {
+                            setMode(AppMode.FOCUS);
+                        } else if (!isPinching && currentMode === AppMode.FOCUS) {
+                            setMode(AppMode.SCATTER);
+                        }
+                    }
+                };
+
+                const hands = new window.Hands({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+                });
+
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.6,
+                    minTrackingConfidence: 0.6,
+                });
+
+                hands.onResults(onResults);
+
+                const camera = new window.Camera(videoRef.current, {
+                    onFrame: async () => {
+                        if (videoRef.current) await hands.send({ image: videoRef.current });
+                    },
+                    width: 640,
+                    height: 480,
+                });
+
+                camera.start();
+            }, []);
+
+            const handData = useStore((s) => s.handData);
+
+            return React.createElement('div', { className: "fixed top-4 left-4 z-50 pointer-events-none opacity-80 font-mono" },
+                React.createElement('video', { ref: videoRef, className: "w-32 h-24 rounded-lg border-2 border-yellow-500 transform scale-x-[-1]", autoPlay: true, playsInline: true, muted: true }),
+                !loaded && React.createElement('div', { className: "text-xs text-white mt-1" }, "Initializing..."),
+                loaded && React.createElement('div', { className: "mt-1 flex flex-col items-start gap-1 bg-black/60 backdrop-blur p-2 rounded text-[10px] text-gray-300 border border-white/10" },
+                    React.createElement('div', { className: "text-yellow-400 font-bold mb-1" }, "GESTURE DEBUG"),
+                    React.createElement('div', { className: handData.isFist ? "text-red-400 font-bold" : "" }, `Fist: ${debugInfo.avgDist.toFixed(2)} / <0.27`),
+                    React.createElement('div', { className: handData.isOpen ? "text-blue-400 font-bold" : "" }, `Open: ${debugInfo.avgDist.toFixed(2)} / >0.36`),
+                    React.createElement('div', { className: handData.isPinching ? "text-yellow-400 font-bold" : "" }, `Pinch: ${debugInfo.pinchDist.toFixed(2)}`)
+                )
+            );
+        };
+
+        // ============== OVERLAY ==============
+        const Overlay = () => {
+            const mode = useStore((s) => s.mode);
+
+            const getInstructions = () => {
+                switch (mode) {
+                    case AppMode.TREE: return "Open your hand to Explode the tree.";
+                    case AppMode.SCATTER: return "Make a Fist to assemble. Pinch to Grab a memory. Move hand to rotate.";
+                    case AppMode.FOCUS: return "Release pinch to let go.";
+                    default: return "";
+                }
+            };
+
+            const getTitle = () => {
+                if (mode === AppMode.TREE) return "THE CHRISTMAS TREE";
+                if (mode === AppMode.SCATTER) return "MEMORY CLOUD";
+                return "CHERISHED MOMENT";
+            };
+
+            return React.createElement('div', { className: "fixed bottom-10 left-0 w-full text-center pointer-events-none z-10" },
+                React.createElement('div', { className: "inline-block bg-black/50 backdrop-blur-md border border-yellow-500/30 px-6 py-4 rounded-full shadow-[0_0_20px_rgba(255,215,0,0.2)]" },
+                    React.createElement('h1', { className: "font-cinzel text-xl text-yellow-400 mb-1 tracking-widest" }, getTitle()),
+                    React.createElement('p', { className: "font-lato text-gray-300 text-sm" }, getInstructions())
+                )
+            );
+        };
+
+        // ============== PHOTO ITEM ==============
+        const PhotoItem = ({ url, index, position: scatterPos, treePosition: treePos }) => {
+            const groupRef = useRef(null);
+            const { mode, focusedPhotoIndex } = useStore();
+
+            useFrame((state, delta) => {
+                if (!groupRef.current) return;
+
+                let target = new THREE.Vector3();
+                let targetScale = 1;
+                const time = state.clock.getElapsedTime();
+
+                if (mode === AppMode.TREE) {
+                    const rot = time * 0.1;
+                    const x = treePos.x * Math.cos(rot) - treePos.z * Math.sin(rot);
+                    const z = treePos.x * Math.sin(rot) + treePos.z * Math.cos(rot);
+                    target.set(x, treePos.y, z);
+                    targetScale = 2.0;
+                    const lookAtTarget = target.clone().multiplyScalar(2);
+                    lookAtTarget.y = target.y;
+                    groupRef.current.lookAt(lookAtTarget);
+                } else if (mode === AppMode.SCATTER) {
+                    target.copy(scatterPos);
+                    target.y += Math.sin(time + index) * 0.2;
+                    groupRef.current.lookAt(state.camera.position);
+                    targetScale = 2.0;
+                } else if (mode === AppMode.FOCUS) {
+                    if (focusedPhotoIndex === index) {
+                        const camDir = new THREE.Vector3();
+                        state.camera.getWorldDirection(camDir);
+                        target.copy(state.camera.position).add(camDir.multiplyScalar(5));
+                        groupRef.current.lookAt(state.camera.position);
+                        targetScale = 2.0;
+                    } else {
+                        target.copy(scatterPos).multiplyScalar(1.5);
+                        groupRef.current.lookAt(state.camera.position);
+                        targetScale = 1;
+                    }
+                }
+
+                groupRef.current.position.lerp(target, delta * 3);
+                const s = THREE.MathUtils.lerp(groupRef.current.scale.x, targetScale, delta * 3);
+                groupRef.current.scale.setScalar(s);
+            });
+
+            return React.createElement('group', { ref: groupRef },
+                React.createElement('mesh', { position: [0, 0, -0.02] },
+                    React.createElement('boxGeometry', { args: [1.05, 1.35, 0.02] }),
+                    React.createElement('meshStandardMaterial', { color: "#FFD700", metalness: 1, roughness: 0.2 })
+                ),
+                React.createElement(Image, { url: url, scale: [1, 1.3], toneMapped: false, position: [0, 0, 0.01] })
+            );
+        };
+
+        // ============== PHOTO CLOUD ==============
+        const PhotoCloud = () => {
+            const { handData, mode, focusedPhotoIndex, setFocusedPhoto } = useStore();
+
+            const photoPositions = useMemo(() => {
+                return USER_PHOTOS.map((_, i) => {
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos((Math.random() * 2) - 1);
+                    const radius = 9 + Math.random() * 5;
+                    const scatter = new THREE.Vector3(
+                        radius * Math.sin(phi) * Math.cos(theta),
+                        radius * Math.sin(phi) * Math.sin(theta),
+                        radius * Math.cos(phi)
+                    );
+                    const y = (i / USER_PHOTOS.length) * 12 - 5;
+                    const angle = i * (Math.PI * 2 / USER_PHOTOS.length) + Math.PI/4;
+                    const r = 7.5 - (y + 5) * 0.25;
+                    const tree = new THREE.Vector3(Math.cos(angle) * r, y, Math.sin(angle) * r);
+                    return { scatter, tree };
+                });
+            }, []);
+
+            useFrame((state) => {
+                if (handData.isPinching && focusedPhotoIndex === null) {
+                    let bestIndex = -1;
+                    let maxDot = -1.0;
+                    const camDir = new THREE.Vector3();
+                    state.camera.getWorldDirection(camDir);
+
+                    photoPositions.forEach((pos, i) => {
+                        const dirToPhoto = new THREE.Vector3().copy(pos.scatter).sub(state.camera.position).normalize();
+                        const dot = camDir.dot(dirToPhoto);
+                        if (dot > maxDot) {
+                            maxDot = dot;
+                            bestIndex = i;
+                        }
+                    });
+
+                    if (bestIndex !== -1) {
+                        setFocusedPhoto(bestIndex);
+                    }
+                }
+
+                if (!handData.isPinching && focusedPhotoIndex !== null) {
+                    setFocusedPhoto(null);
+                }
+            });
+
+            return React.createElement('group', null,
+                USER_PHOTOS.map((url, i) =>
+                    React.createElement(PhotoItem, {
+                        key: i,
+                        url: url,
+                        index: i,
+                        position: photoPositions[i].scatter,
+                        treePosition: photoPositions[i].tree
+                    })
+                )
+            );
+        };
+
+        // ============== ORNAMENTS ==============
+        const Ornaments = () => {
+            const baubleRef = useRef(null);
+            const lightRef = useRef(null);
+            const giftRef = useRef(null);
+            const snowflakeRef = useRef(null);
+            const ringRef = useRef(null);
+            const gemRef = useRef(null);
+            const starRef = useRef(null);
+
+            const mode = useStore((s) => s.mode);
+            const particles = useMemo(() => generateParticles(CONFIG.particleCount), []);
+
+            const { baubleIndices, lightIndices, giftIndices, snowflakeIndices, ringIndices, gemIndices, starData } = useMemo(() => {
+                const bIdx = [], lIdx = [], gIdx = [], sIdx = [], rIdx = [], gemIdx = [];
+                let star = null;
+                particles.forEach((p, idx) => {
+                    if (p.type === 'bauble') bIdx.push(idx);
+                    else if (p.type === 'light') lIdx.push(idx);
+                    else if (p.type === 'gift') gIdx.push(idx);
+                    else if (p.type === 'snowflake') sIdx.push(idx);
+                    else if (p.type === 'ring') rIdx.push(idx);
+                    else if (p.type === 'gem') gemIdx.push(idx);
+                    else if (p.type === 'star') star = p;
+                });
+                return { baubleIndices: bIdx, lightIndices: lIdx, giftIndices: gIdx, snowflakeIndices: sIdx, ringIndices: rIdx, gemIndices: gemIdx, starData: star };
+            }, [particles]);
+
+            const dummy = useMemo(() => new THREE.Object3D(), []);
+            const targetPos = useMemo(() => new THREE.Vector3(), []);
+            const currentPos = useMemo(() => new Array(particles.length).fill(null).map(() => new THREE.Vector3()), []);
+            const initialized = useRef(false);
+
+            useFrame((state, delta) => {
+                const time = state.clock.getElapsedTime();
+                const treeRotation = time * 0.15;
+
+                particles.forEach((particle, i) => {
+                    if (mode === AppMode.TREE) {
+                        const x = particle.treePos[0];
+                        const z = particle.treePos[2];
+                        const rotX = x * Math.cos(treeRotation) - z * Math.sin(treeRotation);
+                        const rotZ = x * Math.sin(treeRotation) + z * Math.cos(treeRotation);
+                        targetPos.set(rotX, particle.treePos[1], rotZ);
+                        if (particle.type === 'star') {
+                            targetPos.set(0, particle.treePos[1], 0);
+                        }
+                    } else {
+                        targetPos.set(...particle.initialPos);
+                        if (particle.type === 'snowflake') {
+                            targetPos.y = (targetPos.y - delta * 2);
+                            if (targetPos.y < -15) targetPos.y = 15;
+                        } else {
+                            targetPos.y += Math.sin(time + particle.id) * 0.05;
+                        }
+                        targetPos.x += Math.cos(time * 0.5 + particle.id) * 0.05;
+                    }
+
+                    if (!initialized.current) currentPos[i].copy(targetPos);
+                    const speed = mode === AppMode.TREE ? 4 : 2;
+                    currentPos[i].lerp(targetPos, delta * speed);
+                });
+
+                const updateMesh = (mesh, indices, type) => {
+                    if (!mesh) return;
+                    let idx = 0;
+                    indices.forEach(pId => {
+                        const p = particles[pId];
+                        dummy.position.copy(currentPos[pId]);
+                        let scale = p.scale;
+
+                        if (type === 'light') {
+                            scale *= (0.8 + Math.sin(time * 4 + pId) * 0.4);
+                            dummy.lookAt(state.camera.position);
+                        } else if (type === 'snowflake') {
+                            dummy.rotation.x += delta;
+                            dummy.rotation.y += delta;
+                        } else if (type === 'ring') {
+                            dummy.rotation.set(time + pId, time * 0.5, 0);
+                        } else if (type === 'gem') {
+                            dummy.rotation.set(time * 0.2, pId, time * 0.2);
+                        } else if (type === 'gift') {
+                            if (mode === AppMode.TREE) {
+                                dummy.rotation.set(0, pId + treeRotation, 0);
+                            } else {
+                                dummy.rotation.set(time * 0.5, time * 0.3, pId);
+                            }
+                        } else if (type === 'bauble') {
+                            if (mode === AppMode.TREE) dummy.rotation.set(0, treeRotation + pId, 0);
+                        }
+
+                        dummy.scale.setScalar(scale);
+                        dummy.updateMatrix();
+                        mesh.setMatrixAt(idx, dummy.matrix);
+
+                        const col = new THREE.Color(p.color);
+                        if (type === 'light') {
+                            if (Math.sin(time * 5 + pId) > 0.8) col.setHex(0xFFFFFF);
+                        }
+                        mesh.setColorAt(idx, col);
+                        idx++;
+                    });
+                    mesh.instanceMatrix.needsUpdate = true;
+                    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+                };
+
+                updateMesh(baubleRef.current, baubleIndices, 'bauble');
+                updateMesh(lightRef.current, lightIndices, 'light');
+                updateMesh(giftRef.current, giftIndices, 'gift');
+                updateMesh(snowflakeRef.current, snowflakeIndices, 'snowflake');
+                updateMesh(ringRef.current, ringIndices, 'ring');
+                updateMesh(gemRef.current, gemIndices, 'gem');
+
+                if (starRef.current && starData) {
+                    starRef.current.position.copy(currentPos[starData.id]);
+                    starRef.current.rotation.y = time * 0.5;
+                    starRef.current.position.y += Math.sin(time * 2) * 0.1;
+                    const scale = 1.0 + Math.sin(time * 3) * 0.1;
+                    starRef.current.scale.setScalar(scale);
+                }
+
+                initialized.current = true;
+            });
+
+            return React.createElement('group', null,
+                React.createElement('instancedMesh', { ref: baubleRef, args: [baubleGeo, undefined, baubleIndices.length], castShadow: true, receiveShadow: true },
+                    React.createElement('meshPhysicalMaterial', { roughness: 0.15, metalness: 0.6, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 2.0 })
+                ),
+                React.createElement('instancedMesh', { ref: lightRef, args: [lightGeo, undefined, lightIndices.length] },
+                    React.createElement('meshStandardMaterial', { roughness: 0, metalness: 1, emissive: "#F7E7CE", emissiveIntensity: 6, toneMapped: false })
+                ),
+                React.createElement('instancedMesh', { ref: giftRef, args: [giftGeo, undefined, giftIndices.length], castShadow: true },
+                    React.createElement('meshStandardMaterial', { roughness: 0.05, metalness: 1.0, envMapIntensity: 3.0 })
+                ),
+                React.createElement('instancedMesh', { ref: snowflakeRef, args: [snowflakeGeo, undefined, snowflakeIndices.length] },
+                    React.createElement('meshPhysicalMaterial', { roughness: 0, metalness: 0.2, transmission: 1, thickness: 1.5, color: "#E0F7FA", emissive: "#FFFFFF", emissiveIntensity: 1, envMapIntensity: 3 })
+                ),
+                React.createElement('instancedMesh', { ref: ringRef, args: [ringGeo, undefined, ringIndices.length], castShadow: true },
+                    React.createElement('meshStandardMaterial', { color: "#FFD700", roughness: 0.05, metalness: 1.0, envMapIntensity: 3.0 })
+                ),
+                React.createElement('instancedMesh', { ref: gemRef, args: [gemGeo, undefined, gemIndices.length], castShadow: true },
+                    React.createElement('meshPhysicalMaterial', { roughness: 0, metalness: 0.1, transmission: 0.6, reflectivity: 1, clearcoat: 1, envMapIntensity: 4.0 })
+                ),
+                starData && React.createElement('group', { ref: starRef },
+                    React.createElement('mesh', { geometry: starGeo, castShadow: true },
+                        React.createElement('meshStandardMaterial', { color: "#FFD700", metalness: 1, roughness: 0.02, emissive: "#FFD700", emissiveIntensity: 0.8, envMapIntensity: 4 })
+                    ),
+                    React.createElement('pointLight', { intensity: 3, distance: 30, color: "#FFD700", decay: 2 }),
+                    React.createElement('mesh', { position: [0, 0, -0.1], scale: [1.2, 1.2, 1.2] },
+                        React.createElement('circleGeometry', { args: [1.5, 32] }),
+                        React.createElement('meshBasicMaterial', { color: "#FFD700", transparent: true, opacity: 0.3 })
+                    )
+                )
+            );
+        };
+
+        // ============== CAMERA CONTROLLER ==============
+        const CameraController = () => {
+            const { mode, handData } = useStore();
+
+            useFrame((state, delta) => {
+                if (mode === AppMode.FOCUS) return;
+
+                if (mode === AppMode.TREE) {
+                    const targetPos = new THREE.Vector3(0, 1, 35);
+                    state.camera.position.lerp(targetPos, delta * 2);
+                    state.camera.lookAt(0, 1, 0);
+                } else {
+                    const targetAngle = handData.rotation * 1.5;
+                    const radius = 32;
+                    const targetX = Math.sin(targetAngle) * radius;
+                    const targetZ = Math.cos(targetAngle) * radius;
+
+                    state.camera.position.x = THREE.MathUtils.lerp(state.camera.position.x, targetX, delta * 3);
+                    state.camera.position.z = THREE.MathUtils.lerp(state.camera.position.z, targetZ, delta * 3);
+                    state.camera.position.y = THREE.MathUtils.lerp(state.camera.position.y, 2, delta * 2);
+                    state.camera.lookAt(0, 0, 0);
+                }
+            });
+
+            return null;
+        };
+
+        // ============== SCENE CONTENT ==============
+        const SceneContent = () => {
+            return React.createElement(React.Fragment, null,
+                React.createElement(CameraController),
+                React.createElement('ambientLight', { intensity: 0.2 }),
+                React.createElement('pointLight', { position: [10, 15, 10], intensity: 3, color: "#FFD700", distance: 60, decay: 2 }),
+                React.createElement('pointLight', { position: [-15, 5, -15], intensity: 1.5, color: "#E0F7FA", distance: 50, decay: 2 }),
+                React.createElement('spotLight', { position: [0, 40, -10], intensity: 5, angle: 0.5, penumbra: 0.5, color: "#FFF5E0", castShadow: true }),
+                React.createElement(Environment, { preset: "lobby", background: false, blur: 0.6 }),
+                React.createElement(Stars, { radius: 100, depth: 50, count: 5000, factor: 4, saturation: 0, fade: true, speed: 0.5 }),
+                React.createElement(Sparkles, { count: 600, scale: 25, size: 4, speed: 0.3, opacity: 0.9, color: "#FFD700" }),
+                React.createElement(Sparkles, { count: 200, scale: 20, size: 6, speed: 0.1, opacity: 0.6, color: "#FFFFFF" }),
+                React.createElement(Ornaments),
+                React.createElement(PhotoCloud),
+                React.createElement(EffectComposer, { disableNormalPass: true },
+                    React.createElement(Bloom, { luminanceThreshold: 0.8, mipmapBlur: true, intensity: 1.5, radius: 0.5 }),
+                    React.createElement(Noise, { opacity: 0.02 }),
+                    React.createElement(Vignette, { eskil: false, offset: 0.1, darkness: 1.1 })
+                )
+            );
+        };
+
+        // ============== MAIN APP ==============
+        const App = () => {
+            return React.createElement('div', { className: "relative w-full h-screen bg-black" },
+                React.createElement(HandTracker),
+                React.createElement(Overlay),
+                React.createElement(Canvas, {
+                    shadows: true,
+                    camera: { position: [0, 0, 30], fov: 40 },
+                    dpr: [1, 2],
+                    gl: { antialias: false, toneMappingExposure: 1.5, powerPreference: "high-performance" }
+                },
+                    React.createElement(Suspense, { fallback: null },
+                        React.createElement(SceneContent)
+                    )
+                ),
+                React.createElement('div', {
+                    className: "fixed top-0 left-0 w-full h-full pointer-events-none mix-blend-screen opacity-10",
+                    style: { backgroundImage: "url('https://www.transparenttextures.com/patterns/stardust.png')" }
+                })
+            );
+        };
+
+        // ============== RENDER ==============
+        const rootElement = document.getElementById('root');
+        const root = createRoot(rootElement);
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
+
